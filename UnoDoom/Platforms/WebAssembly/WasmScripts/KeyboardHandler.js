@@ -6,7 +6,16 @@
         return false;
     }
 
+    // Helper function to check if the target element is editable
+    function isEditableElement(element) {
+        return element.tagName === 'INPUT' || 
+               element.tagName === 'TEXTAREA' || 
+               element.isContentEditable;
+    }
+
     document.addEventListener('keydown', function (event) {
+        // Note: event.key returns lowercase for letter keys when used with modifiers like Ctrl
+        
         // Prevent Ctrl+W (close window) - W is used for forward movement, Ctrl for shooting
         if (event.ctrlKey && event.key === 'w') {
             return preventDefaultAction(event);
@@ -42,11 +51,8 @@
             return preventDefaultAction(event);
         }
 
-        // Prevent Backspace from navigating back (except in input fields and contenteditable elements)
-        if (event.key === 'Backspace' && 
-            event.target.tagName !== 'INPUT' && 
-            event.target.tagName !== 'TEXTAREA' && 
-            !event.target.isContentEditable) {
+        // Prevent Backspace from navigating back (except in editable elements)
+        if (event.key === 'Backspace' && !isEditableElement(event.target)) {
             return preventDefaultAction(event);
         }
     });
