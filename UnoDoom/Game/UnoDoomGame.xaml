@@ -39,5 +39,24 @@
                 Foreground="White"
                 Glyph="&#xE7B3;" />
         </Grid>
+        <!--  Exit button to return to WAD selection  -->
+        <Grid
+            x:Name="ExitButton"
+            Width="40"
+            Height="40"
+            Margin="0,30,30,0"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Top"
+            Background="#40808080"
+            BorderBrush="#80FFFFFF"
+            BorderThickness="1"
+            CornerRadius="20"
+            PointerPressed="ExitButton_PointerPressed">
+            <FontIcon
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Foreground="White"
+                Glyph="&#xE72B;" />
+        </Grid>
     </Grid>
 </UserControl>

@@ -60,6 +60,17 @@ public partial class UnoDoomGame : UserControl
     private bool _initialized;
     private bool _touchOverlayEnabled;
 
+    /// <summary>
+    /// Gets or sets the path to the WAD file to load.
+    /// Must be set before the control is loaded.
+    /// </summary>
+    public string? WadPath { get; set; }
+
+    /// <summary>
+    /// Event raised when the user requests to exit the game and return to WAD selection.
+    /// </summary>
+    public event EventHandler? ExitRequested;
+
     private DispatcherTimer? _gameTimer;
 #if HAS_UNO
     private DoomCanvasElement _canvas;
@@ -130,6 +141,24 @@ public partial class UnoDoomGame : UserControl
         e.Handled = true;
     }
 
+    private void ExitButton_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        // Unsubscribe LosingFocus to allow proper focus release during navigation
+        this.LosingFocus -= UnoDoomGame_LosingFocus;
+        ExitRequested?.Invoke(this, EventArgs.Empty);
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// Requests exit from the game (called when game ends or user exits via menu).
+    /// </summary>
+    public void RequestExit()
+    {
+        // Unsubscribe LosingFocus to allow proper focus release during navigation
+        this.LosingFocus -= UnoDoomGame_LosingFocus;
+        ExitRequested?.Invoke(this, EventArgs.Empty);
+    }
+
     private void UnoDoomGame_LosingFocus(UIElement sender, LosingFocusEventArgs args)
     {
         // Always keep focus
@@ -171,7 +200,12 @@ public partial class UnoDoomGame : UserControl
 
             PlatformHelpers.ConfigUtilities = new ConfigUtilities();
 
-            args = new CommandLineArgs(new string[] { });
+            // Create command line args with WAD path if specified
+            string[] cmdArgs = string.IsNullOrEmpty(WadPath)
+                ? Array.Empty<string>()
+                : new string[] { "-iwad", WadPath };
+
+            args = new CommandLineArgs(cmdArgs);
             var configUtilities = new ConfigUtilities();
             _config = configUtilities.GetConfig();
             _content = new GameContent(args);
@@ -267,7 +301,8 @@ public partial class UnoDoomGame : UserControl
 
             if (_doom!.Update() == UpdateResult.Completed)
             {
-                // Game completed - could reload or show menu
+                // Game completed - return to WAD selection
+                RequestExit();
                 return;
             }
 
