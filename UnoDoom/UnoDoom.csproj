@@ -57,4 +57,9 @@
         <Content Include="Assets\**" />
     </ItemGroup>
 
+    <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-browserwasm'">
+        <!-- WebAssembly JavaScript files -->
+        <Content Include="Platforms\WebAssembly\WasmScripts\*.js" />
+    </ItemGroup>
+
 </Project>
