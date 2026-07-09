@@ -96,10 +96,26 @@ public class UnoGamepadInput : IDisposable
 
     private void UpdateGamepadState(object? sender, object e)
     {
-        if (_doom == null || Gamepad.Gamepads.Count == 0)
+        if (_doom == null)
             return;
 
-        var gamepad = Gamepad.Gamepads[0]; // Use first gamepad
+        IReadOnlyList<Gamepad> gamepads;
+        try
+        {
+            gamepads = Gamepad.Gamepads;
+        }
+        catch (NotImplementedException)
+        {
+            // Gamepad API is unavailable on this platform (e.g. Uno Win32 desktop).
+            // Stop polling so we don't throw on every tick.
+            _updateTimer.Stop();
+            return;
+        }
+
+        if (gamepads.Count == 0)
+            return;
+
+        var gamepad = gamepads[0]; // Use first gamepad
         var reading = gamepad.GetCurrentReading();
         
         ProcessButtons(reading);

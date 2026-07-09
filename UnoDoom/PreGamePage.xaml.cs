@@ -63,6 +63,16 @@ public sealed partial class PreGamePage : Page
     private async void PreGamePage_Loaded(object sender, RoutedEventArgs e)
     {
         await LoadWadListAsync();
+
+        // Profiling aid: auto-launch into the game with the first WAD when requested.
+        if (Environment.GetEnvironmentVariable("XAMLDOOM_AUTOSTART") == "1")
+        {
+            var wad = _selectedWad ?? _wads.FirstOrDefault();
+            if (wad != null)
+            {
+                Frame.Navigate(typeof(GamePage), wad.FullPath);
+            }
+        }
     }
 
     private async Task LoadWadListAsync()

@@ -18,6 +18,17 @@ public class UnoVideo : IVideo, IDisposable
 
     public SKRect Viewport { get; private set; }
 
+    /// <summary>
+    /// The raw 8-bit palette-indexed framebuffer (column-major: data[x * Height + y]).
+    /// </summary>
+    public byte[] ScreenData => renderer.Screen.Data;
+
+    /// <summary>Doom screen width in pixels.</summary>
+    public int ScreenWidth => renderer.Width;
+
+    /// <summary>Doom screen height in pixels.</summary>
+    public int ScreenHeight => renderer.Height;
+
     public UnoVideo(Config config, GameContent content)
     {
         try
@@ -131,6 +142,26 @@ public class UnoVideo : IVideo, IDisposable
         canvas.Restore();
     }
 
+    /// <summary>
+    /// Runs the Doom renderer for a single frame and returns the palette to apply.
+    /// The resulting 8-bit indices are exposed via <see cref="ScreenData"/>.
+    /// This is the Skia-free path used by the XamlDoom rectangle renderer.
+    /// </summary>
+    public uint[] RenderScreen(Doom doom, Fixed frameFrac)
+    {
+        if (doom.Wiping)
+        {
+            renderer.RenderDoom(doom, Fixed.One);
+            RenderWipeBands(doom);
+            renderer.RenderMenu(doom);
+            return renderer.palette[0];
+        }
+
+        renderer.RenderDoom(doom, frameFrac);
+        renderer.RenderMenu(doom);
+        return GetActivePalette(doom);
+    }
+
     private void CreateShader()
     {
         string shaderCode = @"
@@ -167,6 +198,16 @@ public class UnoVideo : IVideo, IDisposable
         renderer.RenderDoom(doom, frameFrac);
         renderer.RenderMenu(doom);
 
+        var colors = GetActivePalette(doom);
+
+        WritePaletteDirectParallel(_texture, renderer.Screen.Data, colors);
+    }
+
+    /// <summary>
+    /// Selects the active palette for the current frame (handles damage/bonus flashes).
+    /// </summary>
+    private uint[] GetActivePalette(Doom doom)
+    {
         var palette = renderer.palette;
         var colors = palette[0];
 
@@ -190,13 +231,22 @@ public class UnoVideo : IVideo, IDisposable
             }
         }
 
-        WritePaletteDirectParallel(_texture, renderer.Screen.Data, colors);
+        return colors;
     }
 
     private void RenderWipe(Doom doom)
     {
         renderer.RenderDoom(doom, Fixed.One);
+        RenderWipeBands(doom);
+        renderer.RenderMenu(doom);
+        WritePaletteDirectParallel(_texture, renderer.Screen.Data, renderer.palette[0]);
+    }
 
+    /// <summary>
+    /// Applies the screen-wipe band offsets into the screen buffer.
+    /// </summary>
+    private void RenderWipeBands(Doom doom)
+    {
         var wipe = doom.WipeEffect;
         var scale = renderer.Screen.Width / 320;
 
@@ -219,9 +269,6 @@ public class UnoVideo : IVideo, IDisposable
                 }
             }
         }
-
-        renderer.RenderMenu(doom);
-        WritePaletteDirectParallel(_texture, renderer.Screen.Data, renderer.palette[0]);
     }
 
     private unsafe void WritePaletteDirectParallel(SKBitmap bitmap, byte[] screenData, uint[] palette)

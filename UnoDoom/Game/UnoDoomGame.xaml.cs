@@ -2,45 +2,13 @@ using ManagedDoom;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
-using SkiaSharp;
 using System.Diagnostics;
-#if HAS_UNO
-using Uno.WinUI.Graphics2DSK;
-#endif
 #if WINDOWS || __MACCATALYST__ || __MACOS__
 using Microsoft.UI.Xaml.Input;
 using Windows.System;
 #endif
 
 namespace UnoDoom.Game;
-
-#if HAS_UNO
-/// <summary>
-/// Event args for canvas rendering.
-/// </summary>
-internal class SKCanvasElementPaintEventArgs : EventArgs
-{
-    public SKCanvas Canvas { get; internal set; } = null!;
-    public Windows.Foundation.Size Size { get; internal set; }
-}
-
-/// <summary>
-/// Custom SKCanvasElement for rendering the DOOM game.
-/// </summary>
-internal class DoomCanvasElement : SKCanvasElement
-{
-    private readonly SKCanvasElementPaintEventArgs _eventArgs = new();
-
-    public event EventHandler<SKCanvasElementPaintEventArgs>? PaintSurface;
-
-    protected override void RenderOverride(SKCanvas canvas, Windows.Foundation.Size size)
-    {
-        _eventArgs.Canvas = canvas;
-        _eventArgs.Size = size;
-        PaintSurface?.Invoke(this, _eventArgs);
-    }
-}
-#endif
 
 public partial class UnoDoomGame : UserControl
 {
@@ -60,6 +28,20 @@ public partial class UnoDoomGame : UserControl
     private bool _initialized;
     private bool _touchOverlayEnabled;
 
+    // XamlDoom: Doom renders at 640x400 by default. Downsample controls the grid:
+    //   2 -> 320x200 = 64,000 rects   4 -> 160x100 = 16,000 rects   8 -> 80x50 = 4,000 rects
+    // Overridable via the XAMLDOOM_DOWNSAMPLE env var (for profiling sweeps).
+    private static readonly int PixelDownsample =
+        int.TryParse(Environment.GetEnvironmentVariable("XAMLDOOM_DOWNSAMPLE"), out var d) && d > 0 ? d : 4;
+
+    // --- profiling instrumentation (enable with XAMLDOOM_PERF=1) ---
+    private readonly bool _perfEnabled = Environment.GetEnvironmentVariable("XAMLDOOM_PERF") == "1";
+    private long _perfWindowStart;
+    private int _renderFrames;   // real presented frames (CompositionTarget.Rendering)
+    private int _tickFrames;     // game ticks in the window
+    private double _frameCpuMsSum;
+    private long _changedPxSum;
+
     /// <summary>
     /// Gets or sets the path to the WAD file to load.
     /// Must be set before the control is loaded.
@@ -72,31 +54,22 @@ public partial class UnoDoomGame : UserControl
     public event EventHandler? ExitRequested;
 
     private DispatcherTimer? _gameTimer;
-#if HAS_UNO
-    private DoomCanvasElement _canvas;
-#endif
+    private readonly Viewbox _scalingBox;
+    private DoomRectangleCanvas? _rectCanvas;
 
     public UnoDoomGame()
     {
         this.InitializeComponent();
-        
+
         HorizontalAlignment = HorizontalAlignment.Stretch;
         VerticalAlignment = VerticalAlignment.Stretch;
 
-        var scalingBox = new Viewbox();
-        scalingBox.Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform;
-        CanvasRoot.Child = scalingBox;
-
-#if HAS_UNO
-        _canvas = new DoomCanvasElement();
-        _canvas.PaintSurface += OnPaintSurface;
-        _canvas.HorizontalAlignment = HorizontalAlignment.Stretch;
-        _canvas.VerticalAlignment = VerticalAlignment.Stretch;
-        _canvas.Width = 320;
-        _canvas.Height = 200;
-
-        scalingBox.Child = _canvas;
-#endif
+        _scalingBox = new Viewbox
+        {
+            Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
+            UseLayoutRounding = false,
+        };
+        CanvasRoot.Child = _scalingBox;
 
         this.Loaded += UnoDoomGame_Loaded;
         this.Unloaded += UnoDoomGame_Unloaded;
@@ -171,7 +144,49 @@ public partial class UnoDoomGame : UserControl
         TouchOverlay.HideRequested += TouchOverlay_HideRequested;
         
         await InitializeGameAsync();
+        SetupRenderCanvas();
         StartGameLoop();
+    }
+
+    private void SetupRenderCanvas()
+    {
+        if (_video == null || _rectCanvas != null)
+            return;
+
+        _rectCanvas = new DoomRectangleCanvas(_video.ScreenWidth, _video.ScreenHeight, PixelDownsample);
+        _scalingBox.Child = _rectCanvas.Root;
+        Console.WriteLine($"XamlDoom canvas ready: {_rectCanvas.PixelCount} rectangles");
+
+        // Count real presented frames for an accurate FPS measurement.
+        if (_perfEnabled)
+        {
+            Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += OnCompositionRendering;
+            _perfWindowStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        }
+    }
+
+    private void OnCompositionRendering(object? sender, object e) => _renderFrames++;
+
+    private void LogPerfIfDue()
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        double sec = (now - _perfWindowStart) / (double)System.Diagnostics.Stopwatch.Frequency;
+        if (sec < 1.0)
+            return;
+
+        double renderFps = _renderFrames / sec;
+        double tickFps = _tickFrames / sec;
+        double avgCpu = _tickFrames > 0 ? _frameCpuMsSum / _tickFrames : 0;
+        double avgChanged = _tickFrames > 0 ? (double)_changedPxSum / _tickFrames : 0;
+        Console.WriteLine(
+            $"[perf] px={_rectCanvas!.PixelCount} renderFPS={renderFps:F1} tickFPS={tickFps:F1} " +
+            $"frameCpu={avgCpu:F2}ms churn={avgChanged:F0}px ({100.0 * avgChanged / _rectCanvas.PixelCount:F0}%)");
+
+        _perfWindowStart = now;
+        _renderFrames = 0;
+        _tickFrames = 0;
+        _frameCpuMsSum = 0;
+        _changedPxSum = 0;
     }
 
     private void TouchOverlay_HideRequested(object? sender, EventArgs e)
@@ -249,9 +264,7 @@ public partial class UnoDoomGame : UserControl
     {
         _gameTimer = new DispatcherTimer();
         _gameTimer.Interval = TimeSpan.FromMilliseconds(1000.0 / 60.0); // 60 FPS target
-#if HAS_UNO
         _gameTimer.Tick += GameTimer_Tick;
-#endif
         _gameTimer.Start();
         LoadingText.Visibility = Visibility.Collapsed;
     }
@@ -261,28 +274,17 @@ public partial class UnoDoomGame : UserControl
         if (_gameTimer != null)
         {
             _gameTimer.Stop();
-#if HAS_UNO
             _gameTimer.Tick -= GameTimer_Tick;
-#endif
             _gameTimer = null;
         }
+
+        Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= OnCompositionRendering;
     }
 
-#if HAS_UNO
     private void GameTimer_Tick(object? sender, object e)
     {
-        _canvas?.Invalidate();
-    }
-
-    private void OnPaintSurface(object? sender, SKCanvasElementPaintEventArgs e)
-    {
-        if (!_initialized || _doom == null)
+        if (!_initialized || _doom == null || _video == null || _rectCanvas == null)
             return;
-
-        var canvas = e.Canvas;
-        canvas.Clear(SKColors.Black);
-
-        var destination = new SKRect(0, 0, (float)e.Size.Width, (float)e.Size.Height);
 
         frameCount++;
 
@@ -290,16 +292,16 @@ public partial class UnoDoomGame : UserControl
         TouchOverlay.SetFrameCount(frameCount);
 
         // Update menu state for touch overlay
-        _input?.SetMenuState(_doom!.Menu.Active);
+        _input?.SetMenuState(_doom.Menu.Active);
 
         var frameFrac = Fixed.FromInt(1);
 
         // Update game every N frames based on fpsScale
         if (frameCount % fpsScale == 0)
         {
-            _input?.Update(_doom!, new EventTimestamp(frameCount));
+            _input?.Update(_doom, new EventTimestamp(frameCount));
 
-            if (_doom!.Update() == UpdateResult.Completed)
+            if (_doom.Update() == UpdateResult.Completed)
             {
                 // Game completed - return to WAD selection
                 RequestExit();
@@ -309,10 +311,20 @@ public partial class UnoDoomGame : UserControl
             frameFrac /= 2;
         }
 
-        // Render the game
-        _video?.Render(canvas, destination, _doom!, frameFrac);
+        // Render the game into the rectangle grid.
+        long t0 = _perfEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        var palette = _video.RenderScreen(_doom, frameFrac);
+        int changed = _rectCanvas.UpdateFrame(_video.ScreenData, palette);
+
+        if (_perfEnabled)
+        {
+            double cpuMs = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            _tickFrames++;
+            _frameCpuMsSum += cpuMs;
+            _changedPxSum += changed;
+            LogPerfIfDue();
+        }
     }
-#endif
 
     private void UnoDoomGame_KeyDown(object sender, KeyRoutedEventArgs e)
     {
